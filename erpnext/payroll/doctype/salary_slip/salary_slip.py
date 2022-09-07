@@ -622,11 +622,23 @@ class SalarySlip(TransactionBase):
 			self.add_tax_components(payroll_period)
 
 	def add_structure_components(self, component_type):
-		data = self.get_data_for_eval()
+		data, default_data = self.get_data_for_eval()
+		timesheet_component = frappe.db.get_value(
+			"Salary Structure", self.salary_structure, "salary_component"
+		)
+
 		for struct_row in self._salary_structure_doc.get(component_type):
+			if self.salary_slip_based_on_timesheet and struct_row.salary_component == timesheet_component:
+				continue
+
 			amount = self.eval_condition_and_formula(struct_row, data)
-			if amount and struct_row.statistical_component == 0:
-				self.update_component_row(struct_row, amount, component_type)
+			if (
+				amount or (struct_row.amount_based_on_formula and amount is not None)
+			) and struct_row.statistical_component == 0:
+				default_amount = self.eval_condition_and_formula(struct_row, default_data)
+				self.update_component_row(
+					struct_row, amount, component_type, data=data, default_amount=default_amount
+				)
 
 	def get_data_for_eval(self):
 		"""Returns data for evaluating formula"""
@@ -670,11 +682,15 @@ class SalarySlip(TransactionBase):
 		for sc in salary_components:
 			data.setdefault(sc.salary_component_abbr, 0)
 
+		# shallow copy of data to store default amounts (without payment days) for tax calculation
+		default_data = data.copy()
+
 		for key in ("earnings", "deductions"):
 			for d in self.get(key):
+				default_data[d.abbr] = d.default_amount
 				data[d.abbr] = d.amount
 
-		return data
+		return data, default_data
 
 	def eval_condition_and_formula(self, d, data):
 		try:
@@ -780,7 +796,14 @@ class SalarySlip(TransactionBase):
 			self.update_component_row(tax_row, tax_amount, "deductions")
 
 	def update_component_row(
-		self, component_data, amount, component_type, additional_salary=None, is_recurring=0
+		self,
+		component_data,
+		amount,
+		component_type,
+		additional_salary=None,
+		is_recurring=0,
+		data=None,
+		default_amount=None,
 	):
 		component_row = None
 		for d in self.get(component_type):
@@ -841,7 +864,7 @@ class SalarySlip(TransactionBase):
 				additional_salary.deduct_full_tax_on_selected_payroll_date
 			)
 		else:
-			component_row.default_amount = amount
+			component_row.default_amount = default_amount or amount
 			component_row.additional_amount = 0
 			component_row.deduct_full_tax_on_selected_payroll_date = (
 				component_data.deduct_full_tax_on_selected_payroll_date
@@ -850,12 +873,18 @@ class SalarySlip(TransactionBase):
 		component_row.amount = amount
 
 		self.update_component_amount_based_on_payment_days(component_row)
+		if data:
+			data[component_row.abbr] = component_row.amount
 
 	def update_component_amount_based_on_payment_days(self, component_row):
 		joining_date, relieving_date = self.get_joining_and_relieving_dates()
 		component_row.amount = self.get_amount_based_on_payment_days(
 			component_row, joining_date, relieving_date
 		)[0]
+
+		# remove 0 valued components that have been updated later
+		if component_row.amount == 0:
+			self.remove(component_row)
 
 	def set_precision_for_component_amounts(self):
 		for component_type in ("earnings", "deductions"):
@@ -1268,7 +1297,7 @@ class SalarySlip(TransactionBase):
 		)[0].total_amount
 
 	def calculate_tax_by_tax_slab(self, annual_taxable_earning, tax_slab):
-		data = self.get_data_for_eval()
+		data, default_data = self.get_data_for_eval()
 		data.update({"annual_taxable_earning": annual_taxable_earning})
 		tax_amount = 0
 		for slab in tax_slab.slabs:
@@ -1346,28 +1375,44 @@ class SalarySlip(TransactionBase):
 		self.total_interest_amount = 0
 		self.total_principal_amount = 0
 
-		if not self.get("loans"):
-			for loan in self.get_loan_details():
+		self.set("loans", [])
+		for loan in self.get_loan_details():
+			amounts = calculate_amounts(loan.name, self.posting_date, "Regular Payment")
 
-				amounts = calculate_amounts(loan.name, self.posting_date, "Regular Payment")
+			if (amounts["interest_amount"] or amounts["payable_principal_amount"]) and (
+				amounts["payable_principal_amount"] + amounts["interest_amount"]
+				> amounts["written_off_amount"]
+			):
 
-				if amounts["interest_amount"] or amounts["payable_principal_amount"]:
-					self.append(
-						"loans",
-						{
-							"loan": loan.name,
-							"total_payment": amounts["interest_amount"] + amounts["payable_principal_amount"],
-							"interest_amount": amounts["interest_amount"],
-							"principal_amount": amounts["payable_principal_amount"],
-							"loan_account": loan.loan_account,
-							"interest_income_account": loan.interest_income_account,
-						},
-					)
+				if amounts["interest_amount"] > amounts["written_off_amount"]:
+					amounts["interest_amount"] -= amounts["written_off_amount"]
+					amounts["written_off_amount"] = 0
+				else:
+					amounts["written_off_amount"] -= amounts["interest_amount"]
+					amounts["interest_amount"] = 0
+
+				if amounts["payable_principal_amount"] > amounts["written_off_amount"]:
+					amounts["payable_principal_amount"] -= amounts["written_off_amount"]
+					amounts["written_off_amount"] = 0
+				else:
+					amounts["written_off_amount"] -= amounts["payable_principal_amount"]
+					amounts["payable_principal_amount"] = 0
+
+				self.append(
+					"loans",
+					{
+						"loan": loan.name,
+						"interest_amount": amounts["interest_amount"],
+						"principal_amount": amounts["payable_principal_amount"],
+						"loan_account": loan.loan_account,
+						"interest_income_account": loan.interest_income_account,
+					},
+				)
 
 		for payment in self.get("loans"):
 			amounts = calculate_amounts(payment.loan, self.posting_date, "Regular Payment")
 			total_amount = amounts["interest_amount"] + amounts["payable_principal_amount"]
-			if payment.total_payment > total_amount:
+			if flt(payment.total_payment) > total_amount:
 				frappe.throw(
 					_(
 						"""Row {0}: Paid amount {1} is greater than pending accrued amount {2} against loan {3}"""
@@ -1379,10 +1424,10 @@ class SalarySlip(TransactionBase):
 					)
 				)
 
-			self.total_interest_amount += payment.interest_amount
-			self.total_principal_amount += payment.principal_amount
+			self.total_interest_amount += flt(payment.interest_amount)
+			self.total_principal_amount += flt(payment.principal_amount)
 
-			self.total_loan_repayment += payment.total_payment
+			self.total_loan_repayment += flt(payment.total_payment)
 
 	def get_loan_details(self):
 		loan_details = frappe.get_all(
@@ -1408,7 +1453,7 @@ class SalarySlip(TransactionBase):
 	def make_loan_repayment_entry(self):
 		payroll_payable_account = get_payroll_payable_account(self.company, self.payroll_entry)
 		for loan in self.loans:
-			if loan.total_payment:
+			if flt(loan.total_payment) > 0:
 				repayment_entry = create_repayment_entry(
 					loan.loan,
 					self.employee,

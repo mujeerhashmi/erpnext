@@ -40,13 +40,12 @@ def validate_gstin_for_india(doc, method):
 
 	gst_category = []
 
-	if hasattr(doc, "gst_category"):
-		if len(doc.links):
-			link_doctype = doc.links[0].get("link_doctype")
-			link_name = doc.links[0].get("link_name")
+	if len(doc.links):
+		link_doctype = doc.links[0].get("link_doctype")
+		link_name = doc.links[0].get("link_name")
 
-			if link_doctype in ["Customer", "Supplier"]:
-				gst_category = frappe.db.get_value(link_doctype, {"name": link_name}, ["gst_category"])
+		if link_doctype in ["Customer", "Supplier"]:
+			gst_category = frappe.db.get_value(link_doctype, {"name": link_name}, ["gst_category"])
 
 	doc.gstin = doc.gstin.upper().strip()
 	if not doc.gstin or doc.gstin == "NA":
@@ -288,7 +287,7 @@ def get_regional_address_details(party_details, doctype, company):
 		return party_details
 
 	if (
-		doctype in ("Sales Invoice", "Delivery Note", "Sales Order")
+		doctype in ("Sales Invoice", "Delivery Note", "Sales Order", "Quotation")
 		and party_details.company_gstin
 		and party_details.company_gstin[:2] != party_details.place_of_supply[:2]
 	) or (
@@ -581,7 +580,7 @@ def get_ewb_data(dt, dn):
 
 		if dt == "Delivery Note":
 			data.subSupplyType = 1
-		elif doc.gst_category in ["Registered Regular", "SEZ"]:
+		elif doc.gst_category in ["Unregistered", "Registered Regular", "SEZ"]:
 			data.subSupplyType = 1
 		elif doc.gst_category in ["Overseas", "Deemed Export"]:
 			data.subSupplyType = 3
@@ -1061,8 +1060,16 @@ def update_taxable_values(doc, method):
 				considered_rows.append(prev_row_id)
 
 	for item in doc.get("items"):
-		proportionate_value = item.base_net_amount if doc.base_net_total else item.qty
-		total_value = doc.base_net_total if doc.base_net_total else doc.total_qty
+		if (
+			doc.apply_discount_on == "Grand Total"
+			and doc.discount_amount
+			and doc.get("is_cash_or_non_trade_discount")
+		):
+			proportionate_value = item.base_amount if doc.base_total else item.qty
+			total_value = doc.base_total if doc.base_total else doc.total_qty
+		else:
+			proportionate_value = item.base_net_amount if doc.base_net_total else item.qty
+			total_value = doc.base_net_total if doc.base_net_total else doc.total_qty
 
 		applicable_charges = flt(
 			flt(

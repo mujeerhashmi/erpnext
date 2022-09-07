@@ -1374,6 +1374,59 @@ class TestSalesOrder(FrappeTestCase):
 		except Exception:
 			self.fail("Can not cancel sales order with linked cancelled payment entry")
 
+	def test_work_order_pop_up_from_sales_order(self):
+		"Test `get_work_order_items` in Sales Order picks the right BOM for items to manufacture."
+
+		from erpnext.controllers.item_variant import create_variant
+		from erpnext.manufacturing.doctype.production_plan.test_production_plan import make_bom
+
+		make_item(  # template item
+			"Test-WO-Tshirt",
+			{
+				"has_variant": 1,
+				"variant_based_on": "Item Attribute",
+				"attributes": [{"attribute": "Test Colour"}],
+			},
+		)
+		make_item("Test-RM-Cotton")  # RM for BOM
+
+		for colour in (
+			"Red",
+			"Green",
+		):
+			variant = create_variant("Test-WO-Tshirt", {"Test Colour": colour})
+			variant.save()
+
+		template_bom = make_bom(item="Test-WO-Tshirt", rate=100, raw_materials=["Test-RM-Cotton"])
+		red_var_bom = make_bom(item="Test-WO-Tshirt-R", rate=100, raw_materials=["Test-RM-Cotton"])
+
+		so = make_sales_order(
+			**{
+				"item_list": [
+					{
+						"item_code": "Test-WO-Tshirt-R",
+						"qty": 1,
+						"rate": 1000,
+						"warehouse": "_Test Warehouse - _TC",
+					},
+					{
+						"item_code": "Test-WO-Tshirt-G",
+						"qty": 1,
+						"rate": 1000,
+						"warehouse": "_Test Warehouse - _TC",
+					},
+				]
+			}
+		)
+		wo_items = so.get_work_order_items()
+
+		self.assertEqual(wo_items[0].get("item_code"), "Test-WO-Tshirt-R")
+		self.assertEqual(wo_items[0].get("bom"), red_var_bom.name)
+
+		# Must pick Template Item BOM for Test-WO-Tshirt-G as it has no BOM
+		self.assertEqual(wo_items[1].get("item_code"), "Test-WO-Tshirt-G")
+		self.assertEqual(wo_items[1].get("bom"), template_bom.name)
+
 	def test_request_for_raw_materials(self):
 		item = make_item(
 			"_Test Finished Item",
@@ -1494,6 +1547,65 @@ class TestSalesOrder(FrappeTestCase):
 		self.assertEqual(si.net_total, 0)
 		so.load_from_db()
 		self.assertEqual(so.billing_status, "Fully Billed")
+
+	def test_so_billing_status_with_crnote_against_sales_return(self):
+		"""
+		| Step | Document creation                    |                               |
+		|------+--------------------------------------+-------------------------------|
+		|    1 | SO -> DN -> SI                       | SO Fully Billed and Completed |
+		|    2 | DN -> Sales Return(Partial)          | SO 50% Delivered, 100% billed |
+		|    3 | Sales Return(Partial) -> Credit Note | SO 50% Delivered, 50% billed  |
+
+		"""
+		from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
+
+		so = make_sales_order(uom="Nos", do_not_save=1)
+		so.save()
+		so.submit()
+
+		self.assertEqual(so.billing_status, "Not Billed")
+
+		dn1 = make_delivery_note(so.name)
+		dn1.taxes_and_charges = ""
+		dn1.taxes.clear()
+		dn1.save().submit()
+
+		si = create_sales_invoice(qty=10, do_not_save=1)
+		si.items[0].sales_order = so.name
+		si.items[0].so_detail = so.items[0].name
+		si.items[0].delivery_note = dn1.name
+		si.items[0].dn_detail = dn1.items[0].name
+		si.save()
+		si.submit()
+
+		so.reload()
+		self.assertEqual(so.billing_status, "Fully Billed")
+		self.assertEqual(so.status, "Completed")
+
+		from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
+
+		dn1.reload()
+		dn_ret = create_delivery_note(is_return=1, return_against=dn1.name, qty=-5, do_not_submit=True)
+		dn_ret.items[0].against_sales_order = so.name
+		dn_ret.items[0].so_detail = so.items[0].name
+		dn_ret.submit()
+
+		so.reload()
+		self.assertEqual(so.per_billed, 100)
+		self.assertEqual(so.per_delivered, 50)
+
+		cr_note = create_sales_invoice(is_return=1, qty=-1, do_not_submit=True)
+		cr_note.items[0].qty = -5
+		cr_note.items[0].sales_order = so.name
+		cr_note.items[0].so_detail = so.items[0].name
+		cr_note.items[0].delivery_note = dn_ret.name
+		cr_note.items[0].dn_detail = dn_ret.items[0].name
+		cr_note.update_billed_amount_in_sales_order = True
+		cr_note.submit()
+
+		so.reload()
+		self.assertEqual(so.per_billed, 50)
+		self.assertEqual(so.per_delivered, 50)
 
 	def test_so_back_updated_from_wo_via_mr(self):
 		"SO -> MR (Manufacture) -> WO. Test if WO Qty is updated in SO."

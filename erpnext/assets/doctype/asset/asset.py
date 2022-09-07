@@ -257,6 +257,7 @@ class Asset(AccountsController):
 				number_of_pending_depreciations += 1
 
 			skip_row = False
+			should_get_last_day = is_last_day_of_the_month(finance_book.depreciation_start_date)
 
 			for n in range(start[finance_book.idx - 1], number_of_pending_depreciations):
 				# If depreciation is already completed (for double declining balance)
@@ -269,6 +270,9 @@ class Asset(AccountsController):
 					schedule_date = add_months(
 						finance_book.depreciation_start_date, n * cint(finance_book.frequency_of_depreciation)
 					)
+
+					if should_get_last_day:
+						schedule_date = get_last_day(schedule_date)
 
 					# schedule date will be a year later from start date
 					# so monthly schedule date is calculated by removing 11 months from it
@@ -349,61 +353,16 @@ class Asset(AccountsController):
 					skip_row = True
 
 				if depreciation_amount > 0:
-					# With monthly depreciation, each depreciation is divided by months remaining until next date
-					if self.allow_monthly_depreciation:
-						# month range is 1 to 12
-						# In pro rata case, for first and last depreciation, month range would be different
-						if (has_pro_rata and n == 0 and not self.number_of_depreciations_booked) or (
-							has_pro_rata and n == cint(number_of_pending_depreciations) - 1
-						):
-							month_range = months
-						else:
-							month_range = finance_book.frequency_of_depreciation
-
-						for r in range(month_range):
-							if has_pro_rata and n == 0 and not self.number_of_depreciations_booked:
-								# For first entry of monthly depr
-								if r == 0:
-									days_until_first_depr = date_diff(monthly_schedule_date, self.available_for_use_date) + 1
-									per_day_amt = depreciation_amount / days
-									depreciation_amount_for_current_month = per_day_amt * days_until_first_depr
-									depreciation_amount -= depreciation_amount_for_current_month
-									date = monthly_schedule_date
-									amount = depreciation_amount_for_current_month
-								else:
-									date = add_months(monthly_schedule_date, r)
-									amount = depreciation_amount / (month_range - 1)
-							elif (has_pro_rata and n == cint(number_of_pending_depreciations) - 1) and r == cint(
-								month_range
-							) - 1:
-								# For last entry of monthly depr
-								date = last_schedule_date
-								amount = depreciation_amount / month_range
-							else:
-								date = add_months(monthly_schedule_date, r)
-								amount = depreciation_amount / month_range
-
-							self.append(
-								"schedules",
-								{
-									"schedule_date": date,
-									"depreciation_amount": amount,
-									"depreciation_method": finance_book.depreciation_method,
-									"finance_book": finance_book.finance_book,
-									"finance_book_id": finance_book.idx,
-								},
-							)
-					else:
-						self.append(
-							"schedules",
-							{
-								"schedule_date": schedule_date,
-								"depreciation_amount": depreciation_amount,
-								"depreciation_method": finance_book.depreciation_method,
-								"finance_book": finance_book.finance_book,
-								"finance_book_id": finance_book.idx,
-							},
-						)
+					self.append(
+						"schedules",
+						{
+							"schedule_date": schedule_date,
+							"depreciation_amount": depreciation_amount,
+							"depreciation_method": finance_book.depreciation_method,
+							"finance_book": finance_book.finance_book,
+							"finance_book_id": finance_book.idx,
+						},
+					)
 
 	# depreciation schedules need to be cleared before modification due to increase in asset life/asset sales
 	# JE: Journal Entry, FB: Finance Book
@@ -845,16 +804,11 @@ class Asset(AccountsController):
 			if args.get("rate_of_depreciation") and on_validate:
 				return args.get("rate_of_depreciation")
 
-			no_of_years = (
-				flt(args.get("total_number_of_depreciations") * flt(args.get("frequency_of_depreciation")))
-				/ 12
-			)
 			value = flt(args.get("expected_value_after_useful_life")) / flt(self.gross_purchase_amount)
 
-			# square root of flt(salvage_value) / flt(asset_cost)
-			depreciation_rate = math.pow(value, 1.0 / flt(no_of_years, 2))
+			depreciation_rate = math.pow(value, 1.0 / flt(args.get("total_number_of_depreciations"), 2))
 
-			return 100 * (1 - flt(depreciation_rate, float_precision))
+			return flt((100 * (1 - depreciation_rate)), float_precision)
 
 	def get_pro_rata_amt(self, row, depreciation_amount, from_date, to_date):
 		days = date_diff(to_date, from_date)
@@ -1103,7 +1057,16 @@ def is_cwip_accounting_enabled(asset_category):
 def get_total_days(date, frequency):
 	period_start_date = add_months(date, cint(frequency) * -1)
 
+	if is_last_day_of_the_month(date):
+		period_start_date = get_last_day(period_start_date)
+
 	return date_diff(date, period_start_date)
+
+
+def is_last_day_of_the_month(date):
+	last_day_of_the_month = get_last_day(date)
+
+	return getdate(last_day_of_the_month) == getdate(date)
 
 
 @erpnext.allow_regional

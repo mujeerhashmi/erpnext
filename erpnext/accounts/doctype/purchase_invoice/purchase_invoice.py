@@ -158,19 +158,9 @@ class PurchaseInvoice(BuyingController):
 		if tds_category and not for_validate:
 			self.apply_tds = 1
 			self.tax_withholding_category = tds_category
+			self.set_onload("supplier_tds", tds_category)
 
 		super(PurchaseInvoice, self).set_missing_values(for_validate)
-
-	def check_conversion_rate(self):
-		default_currency = erpnext.get_company_currency(self.company)
-		if not default_currency:
-			throw(_("Please enter default currency in Company Master"))
-		if (
-			(self.currency == default_currency and flt(self.conversion_rate) != 1.00)
-			or not self.conversion_rate
-			or (self.currency != default_currency and flt(self.conversion_rate) == 1.00)
-		):
-			throw(_("Conversion rate cannot be 0 or 1"))
 
 	def validate_credit_to_acc(self):
 		if not self.credit_to:
@@ -577,7 +567,6 @@ class PurchaseInvoice(BuyingController):
 
 		self.make_supplier_gl_entry(gl_entries)
 		self.make_item_gl_entries(gl_entries)
-		self.make_discount_gl_entries(gl_entries)
 
 		if self.check_asset_cwip_enabled():
 			self.get_asset_gl_entry(gl_entries)
@@ -804,7 +793,7 @@ class PurchaseInvoice(BuyingController):
 					)
 
 					if not item.is_fixed_asset:
-						dummy, amount = self.get_amount_and_base_amount(item, self.enable_discount_accounting)
+						dummy, amount = self.get_amount_and_base_amount(item, None)
 					else:
 						amount = flt(item.base_net_amount + item.item_tax_amount, item.precision("base_net_amount"))
 
@@ -1120,7 +1109,7 @@ class PurchaseInvoice(BuyingController):
 		valuation_tax = {}
 
 		for tax in self.get("taxes"):
-			amount, base_amount = self.get_tax_amounts(tax, self.enable_discount_accounting)
+			amount, base_amount = self.get_tax_amounts(tax, None)
 			if tax.category in ("Total", "Valuation and Total") and flt(base_amount):
 				account_currency = get_account_currency(tax.account_head)
 
@@ -1698,5 +1687,7 @@ def make_purchase_receipt(source_name, target_doc=None):
 		},
 		target_doc,
 	)
+
+	doc.set_onload("ignore_price_list", True)
 
 	return doc

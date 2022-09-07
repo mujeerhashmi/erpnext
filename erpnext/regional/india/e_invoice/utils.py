@@ -56,12 +56,16 @@ def validate_eligibility(doc):
 		return False
 
 	invalid_company = not frappe.db.get_value("E Invoice User", {"company": doc.get("company")})
+	invalid_company_gstin = not frappe.db.get_value(
+		"E Invoice User", {"gstin": doc.get("company_gstin")}
+	)
 	invalid_supply_type = doc.get("gst_category") not in [
 		"Registered Regular",
 		"Registered Composition",
 		"SEZ",
 		"Overseas",
 		"Deemed Export",
+		"UIN Holders",
 	]
 	company_transaction = doc.get("billing_address_gstin") == doc.get("company_gstin")
 
@@ -72,6 +76,7 @@ def validate_eligibility(doc):
 
 	if (
 		invalid_company
+		or invalid_company_gstin
 		or invalid_supply_type
 		or company_transaction
 		or no_taxes_applied
@@ -126,9 +131,7 @@ def read_json(name):
 
 def get_transaction_details(invoice):
 	supply_type = ""
-	if (
-		invoice.gst_category == "Registered Regular" or invoice.gst_category == "Registered Composition"
-	):
+	if invoice.gst_category in ("Registered Regular", "Registered Composition", "UIN Holders"):
 		supply_type = "B2B"
 	elif invoice.gst_category == "SEZ":
 		if invoice.export_type == "Without Payment of Tax":
@@ -144,15 +147,18 @@ def get_transaction_details(invoice):
 		supply_type = "DEXP"
 
 	if not supply_type:
-		rr, rc, sez, overseas, export = (
+		rr, rc, sez, overseas, export, uin = (
 			bold("Registered Regular"),
 			bold("Registered Composition"),
 			bold("SEZ"),
 			bold("Overseas"),
 			bold("Deemed Export"),
+			bold("UIN Holders"),
 		)
 		frappe.throw(
-			_("GST category should be one of {}, {}, {}, {}, {}").format(rr, rc, sez, overseas, export),
+			_("GST category should be one of {}, {}, {}, {}, {}, {}").format(
+				rr, rc, sez, overseas, export, uin
+			),
 			title=_("Invalid Supply Type"),
 		)
 
@@ -259,6 +265,10 @@ def get_overseas_address_details(address_name):
 def get_item_list(invoice):
 	item_list = []
 
+	hide_discount_in_einvoice = cint(
+		frappe.db.get_single_value("E Invoice Settings", "dont_show_discounts_in_e_invoice")
+	)
+
 	for d in invoice.items:
 		einvoice_item_schema = read_json("einv_item_template")
 		item = frappe._dict({})
@@ -268,14 +278,38 @@ def get_item_list(invoice):
 		item.description = sanitize_for_json(d.item_name)
 
 		item.qty = abs(item.qty)
-		if flt(item.qty) != 0.0:
-			item.unit_rate = abs(item.taxable_value / item.qty)
-		else:
-			item.unit_rate = abs(item.taxable_value)
-		item.gross_amount = abs(item.taxable_value)
-		item.taxable_value = abs(item.taxable_value)
-		item.discount_amount = 0
+		item_qty = item.qty
 
+		item.taxable_value = abs(item.taxable_value)
+
+		if invoice.get("is_return") or invoice.get("is_debit_note"):
+			item_qty = item_qty or 1
+
+		if hide_discount_in_einvoice or invoice.is_internal_customer or item.discount_amount < 0:
+			item.unit_rate = item.taxable_value / item_qty
+			item.gross_amount = item.taxable_value
+			item.discount_amount = 0
+
+		else:
+			if invoice.get("apply_discount_on") and (abs(invoice.get("base_discount_amount") or 0.0) > 0.0):
+				# TODO: need to handle case when tax included in basic rate is checked.
+				item.discount_amount = (item.discount_amount * item_qty) + (
+					abs(item.base_amount) - abs(item.base_net_amount)
+				)
+			else:
+				item.discount_amount = item.discount_amount * item_qty
+
+			try:
+				item.unit_rate = (item.taxable_value + item.discount_amount) / item_qty
+			except ZeroDivisionError:
+				# This will never run but added as safety measure
+				frappe.throw(
+					title=_("Error: Qty is Zero"),
+					msg=_("Quantity can't be zero unless it's Credit/Debit Note."),
+				)
+
+		item.gross_amount = item.taxable_value + item.discount_amount
+		item.taxable_value = item.taxable_value
 		item.is_service_item = "Y" if item.gst_hsn_code and item.gst_hsn_code[:2] == "99" else "N"
 		item.serial_no = ""
 
@@ -349,7 +383,14 @@ def update_item_taxes(invoice, item):
 def get_invoice_value_details(invoice):
 	invoice_value_details = frappe._dict(dict())
 	invoice_value_details.base_total = abs(sum([i.taxable_value for i in invoice.get("items")]))
-	invoice_value_details.invoice_discount_amt = 0
+	if (
+		invoice.apply_discount_on == "Grand Total"
+		and invoice.discount_amount
+		and invoice.get("is_cash_or_non_trade_discount")
+	):
+		invoice_value_details.invoice_discount_amt = invoice.discount_amount
+	else:
+		invoice_value_details.invoice_discount_amt = 0
 
 	invoice_value_details.round_off = invoice.base_rounding_adjustment
 	invoice_value_details.base_grand_total = abs(invoice.base_rounded_total) or abs(

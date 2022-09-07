@@ -25,6 +25,7 @@ from six import iteritems
 from erpnext.manufacturing.doctype.bom.bom import get_children, validate_bom_no
 from erpnext.manufacturing.doctype.work_order.work_order import get_item_details
 from erpnext.setup.doctype.item_group.item_group import get_item_group_defaults
+from erpnext.utilities.transaction_base import validate_uom_is_integer
 
 
 class ProductionPlan(Document):
@@ -33,6 +34,7 @@ class ProductionPlan(Document):
 		self.calculate_total_planned_qty()
 		self.set_status()
 		self._rename_temporary_references()
+		validate_uom_is_integer(self, "stock_uom", "planned_qty")
 
 	def set_pending_qty_in_row_without_reference(self):
 		"Set Pending Qty in independent rows (not from SO or MR)."
@@ -480,7 +482,6 @@ class ProductionPlan(Document):
 			"bom_no",
 			"stock_uom",
 			"bom_level",
-			"production_plan_item",
 			"schedule_date",
 		]:
 			if row.get(field):
@@ -637,6 +638,9 @@ class ProductionPlan(Document):
 	def get_sub_assembly_items(self, manufacturing_type=None):
 		self.sub_assembly_items = []
 		for row in self.po_items:
+			if not row.item_code:
+				frappe.throw(_("Row #{0}: Please select Item Code in Assembly Items").format(row.idx))
+
 			bom_data = []
 			get_sub_assembly_items(row.bom_no, bom_data, row.planned_qty)
 			self.set_sub_assembly_items_based_on_level(row, bom_data, manufacturing_type)

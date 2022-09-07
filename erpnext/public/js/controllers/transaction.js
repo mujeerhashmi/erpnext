@@ -1,7 +1,6 @@
 // Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
 // License: GNU General Public License v3. See license.txt
 
-frappe.provide('erpnext.accounts.dimensions');
 
 erpnext.TransactionController = erpnext.taxes_and_totals.extend({
 	setup: function() {
@@ -572,7 +571,6 @@ erpnext.TransactionController = erpnext.taxes_and_totals.extend({
 							is_pos: cint(me.frm.doc.is_pos),
 							is_return: cint(me.frm.doc.is_return),
 							is_subcontracted: me.frm.doc.is_subcontracted,
-							transaction_date: me.frm.doc.transaction_date || me.frm.doc.posting_date,
 							ignore_pricing_rule: me.frm.doc.ignore_pricing_rule,
 							doctype: me.frm.doc.doctype,
 							name: me.frm.doc.name,
@@ -911,24 +909,6 @@ erpnext.TransactionController = erpnext.taxes_and_totals.extend({
 				set_party_account(set_pricing);
 			});
 
-			// Get default company billing address in Purchase Invoice, Order and Receipt
-			if (this.frm.doc.company && frappe.meta.get_docfield(this.frm.doctype, "billing_address")) {
-				frappe.call({
-					method: "erpnext.setup.doctype.company.company.get_default_company_address",
-					args: {name: this.frm.doc.company, existing_address: this.frm.doc.billing_address || ""},
-					debounce: 2000,
-					callback: function(r) {
-						if (r.message) {
-							me.frm.set_value("billing_address", r.message);
-						} else {
-							if (frappe.meta.get_docfield(me.frm.doctype, 'company_address')) {
-								me.frm.set_value("company_address", "");
-							}
-						}
-					}
-				});
-			}
-
 		} else {
 			set_party_account(set_pricing);
 		}
@@ -1224,9 +1204,25 @@ erpnext.TransactionController = erpnext.taxes_and_totals.extend({
 		}
 	},
 
+	is_a_mapped_document(item) {
+		const mapped_item_field_map = {
+			"Delivery Note Item": ["si_detail", "so_detail", "dn_detail"],
+			"Sales Invoice Item": ["dn_detail", "so_detail", "sales_invoice_item"],
+			"Purchase Receipt Item": ["purchase_order_item", "purchase_invoice_item", "purchase_receipt_item"],
+			"Purchase Invoice Item": ["purchase_order_item", "pr_detail", "po_detail"],
+		};
+		const mappped_fields = mapped_item_field_map[item.doctype] || [];
+
+		return mappped_fields
+			.map((field) => item[field])
+			.filter(Boolean).length > 0;
+	},
+
 	batch_no: function(doc, cdt, cdn) {
 		let item = frappe.get_doc(cdt, cdn);
-		this.apply_price_list(item, true);
+		if (!this.is_a_mapped_document(item)) {
+			this.apply_price_list(item, true);
+		}
 	},
 
 	toggle_conversion_factor: function(item) {
@@ -2107,7 +2103,8 @@ erpnext.TransactionController = erpnext.taxes_and_totals.extend({
 					"qty": item.qty,
 					"description": item.description,
 					"serial_no": item.serial_no,
-					"batch_no": item.batch_no
+					"batch_no": item.batch_no,
+					"sample_size": item.sample_quantity
 				});
 				dialog_items.grid.refresh();
 			}

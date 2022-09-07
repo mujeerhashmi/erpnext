@@ -461,6 +461,14 @@ scheduler_events = {
 		"0/30 * * * *": [
 			"erpnext.utilities.doctype.video.video.update_youtube_data",
 		],
+		# Hourly but offset by 30 minutes
+		"30 * * * *": [
+			"erpnext.accounts.doctype.gl_entry.gl_entry.rename_gle_sle_docs",
+		],
+		# Daily but offset by 45 minutes
+		"45 0 * * *": [
+			"erpnext.stock.reorder_item.reorder_item",
+		],
 	},
 	"all": [
 		"erpnext.projects.doctype.project.project.project_status_update_reminder",
@@ -472,19 +480,17 @@ scheduler_events = {
 		"erpnext.hr.doctype.daily_work_summary_group.daily_work_summary_group.trigger_emails",
 		"erpnext.accounts.doctype.subscription.subscription.process_all",
 		"erpnext.erpnext_integrations.doctype.amazon_mws_settings.amazon_mws_settings.schedule_get_order_details",
-		"erpnext.accounts.doctype.gl_entry.gl_entry.rename_gle_sle_docs",
 		"erpnext.erpnext_integrations.doctype.plaid_settings.plaid_settings.automatic_synchronization",
 		"erpnext.projects.doctype.project.project.hourly_reminder",
 		"erpnext.projects.doctype.project.project.collect_project_status",
-		"erpnext.hr.doctype.shift_type.shift_type.process_auto_attendance_for_all_shifts",
 		"erpnext.support.doctype.issue.issue.set_service_level_agreement_variance",
 		"erpnext.erpnext_integrations.connectors.shopify_connection.sync_old_orders",
 	],
 	"hourly_long": [
-		"erpnext.stock.doctype.repost_item_valuation.repost_item_valuation.repost_entries"
+		"erpnext.stock.doctype.repost_item_valuation.repost_item_valuation.repost_entries",
+		"erpnext.hr.doctype.shift_type.shift_type.process_auto_attendance_for_all_shifts",
 	],
 	"daily": [
-		"erpnext.stock.reorder_item.reorder_item",
 		"erpnext.support.doctype.issue.issue.auto_close_tickets",
 		"erpnext.crm.doctype.opportunity.opportunity.auto_close_opportunity",
 		"erpnext.controllers.accounts_controller.update_invoice_status",
@@ -583,6 +589,7 @@ accounting_dimension_doctypes = [
 	"Shipping Rule",
 	"Landed Cost Item",
 	"Asset Value Adjustment",
+	"Asset Repair",
 	"Loyalty Program",
 	"Fee Schedule",
 	"Fee Structure",
